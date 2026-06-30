@@ -1,12 +1,6 @@
-# =============================================================================
 # RHEL 9 Kickstart — Hardened Template Build
-# Benchmark:   NIST SP 800-53 / CIS RHEL 9 aligned
-# Domain:      Entra ID (Azure AD) joined via sssd
-# Network:     DHCP
-# Web Console: Cockpit enabled
-# Agents:      CrowdStrike + ManageEngine installed post-clone
 # =============================================================================
-# PLACEHOLDERS — replace before use:
+# PLACEHOLDERS:
 #   DOMAIN.COM        → your Entra ID domain FQDN (e.g. corp.contoso.com)
 #   TENANT-ID         → your Azure tenant ID (GUID)
 #   DC01.DOMAIN.COM   → your primary domain controller / internal DNS
@@ -14,10 +8,7 @@
 #   LOCAL_ADMIN_HASH  → generate with: python3 -c "import crypt; print(crypt.crypt('PASSWORD', crypt.mksalt(crypt.METHOD_SHA512)))"
 # =============================================================================
 
-###############################################################################
 # INSTALLATION METHOD
-###############################################################################
-# Comment out 'cdrom' and uncomment 'url' if installing from a network mirror
 cdrom
 # url --url="http://MIRROR.DOMAIN.COM/rhel9/BaseOS/x86_64/os/"
 
@@ -26,51 +17,36 @@ skipx
 firstboot --disabled
 reboot
 
-###############################################################################
-# LOCALE / KEYBOARD / TIMEZONE
-###############################################################################
+# TIMEZONE
 lang en_US.UTF-8
 keyboard --vckeymap=us --xlayouts=us
 timezone America/Chicago --utc --ntpservers=DC01.DOMAIN.COM,DC02.DOMAIN.COM
 
-###############################################################################
 # NETWORK — DHCP
-# NIC name (ens192) is standard for VMware VMXNET3 on RHEL 9.
-# Verify with your VMware environment; may be ens160 depending on adapter.
-###############################################################################
+# NIC name (ens192, ens160)
 network --bootproto=dhcp --device=ens192 --onboot=yes --ipv6=no \
         --nameserver=DC01.DOMAIN.COM,DC02.DOMAIN.COM \
         --hostname=rhel9-template.DOMAIN.COM
 
-###############################################################################
 # SECURITY
-###############################################################################
 selinux --enforcing
 firewall --enabled --service=ssh --service=cockpit
 
-###############################################################################
 # AUTHENTICATION
 # localadmin account — password auth enabled for initial access.
-# SSH key should be injected post-clone; password auth will be disabled
-# in sshd_config below but PAM still needs a password for console access.
-###############################################################################
 rootpw --lock
 user --name=localadmin --groups=wheel --iscrypted --password=LOCAL_ADMIN_HASH
 
-# sssd selected here; Entra ID integration configured in %post
 authselect select sssd with-mkhomedir with-faillock --force
 
-###############################################################################
 # BOOTLOADER
-###############################################################################
 bootloader --append="audit=1 audit_backlog_limit=8192 slub_debug=P page_poison=1 \
             vsyscall=none ipv6.disable=1" \
            --location=mbr \
            --boot-drive=sda
 
-###############################################################################
-# PARTITIONING — LVM, NIST/CIS compliant separate mount points
-###############################################################################
+
+# PARTITIONING
 clearpart --all --initlabel --drives=sda
 zerombr
 
@@ -145,7 +121,7 @@ unzip
 bash-completion
 sudo
 
-# Explicitly remove insecure packages
+# Remove insecure packages
 -telnet
 -rsh
 -rsh-server
@@ -161,10 +137,7 @@ sudo
 
 %end
 
-###############################################################################
 # PRE-INSTALL SCRIPT
-# Runs before installation in a minimal busybox environment.
-# Used here to verify disk and log environment details.
 ###############################################################################
 %pre --log=/tmp/ks-pre.log
 #!/bin/bash
@@ -174,7 +147,6 @@ echo "Available disks:" >> /tmp/ks-pre.log
 lsblk >> /tmp/ks-pre.log
 %end
 
-###############################################################################
 # POST-INSTALL SCRIPT
 ###############################################################################
 %post --log=/root/ks-post.log
@@ -182,15 +154,11 @@ lsblk >> /tmp/ks-pre.log
 set -euo pipefail
 echo "=== Kickstart Post-Install Started: $(date) ===" | tee -a /root/ks-post.log
 
-# ---------------------------------------------------------------------------
 # 1. SYSTEM UPDATE
-# ---------------------------------------------------------------------------
 echo "[1/13] Running system update..."
 dnf update -y
 
-# ---------------------------------------------------------------------------
-# 2. SSH HARDENING (NIST AC-17, SC-8)
-# ---------------------------------------------------------------------------
+# 2. SSH HARDENING
 echo "[2/13] Hardening SSH..."
 cat > /etc/ssh/sshd_config << 'EOF'
 # NIST SP 800-53 hardened sshd_config
@@ -226,7 +194,7 @@ AllowAgentForwarding no
 PermitUserEnvironment no
 Banner /etc/issue.net
 
-# Algorithms (NIST SP 800-131A compliant)
+# Algorithms
 Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
 MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
 KexAlgorithms curve25519-sha256,ecdh-sha2-nistp521,ecdh-sha2-nistp384,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256
@@ -242,9 +210,7 @@ EOF
 chmod 600 /etc/ssh/sshd_config
 systemctl enable sshd
 
-# ---------------------------------------------------------------------------
-# 3. PAM — PASSWORD POLICY & ACCOUNT LOCKOUT (NIST IA-5, AC-7)
-# ---------------------------------------------------------------------------
+# 3. PAM — PASSWORD POLICY & ACCOUNT LOCKOUT
 echo "[3/13] Configuring PAM..."
 
 # Password complexity
@@ -271,15 +237,13 @@ even_deny_root
 root_unlock_time = 900
 EOF
 
-# Password aging (NIST IA-5)
+# Password aging
 sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/'  /etc/login.defs
 sed -i 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS   1/'   /etc/login.defs
 sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   14/'  /etc/login.defs
 sed -i 's/^UMASK.*/UMASK           027/'          /etc/login.defs
 
-# ---------------------------------------------------------------------------
-# 4. KERNEL / SYSCTL HARDENING (NIST SC-5, SC-7)
-# ---------------------------------------------------------------------------
+# 4. SYSCTL HARDENING
 echo "[4/13] Applying sysctl hardening..."
 cat > /etc/sysctl.d/99-nist-hardening.conf << 'EOF'
 # === Network Hardening ===
@@ -319,94 +283,8 @@ EOF
 
 sysctl -p /etc/sysctl.d/99-nist-hardening.conf
 
-# ---------------------------------------------------------------------------
-# 5. AUDITD RULES (NIST AU-2, AU-12)
-# ---------------------------------------------------------------------------
-echo "[5/13] Configuring auditd..."
-cat > /etc/audit/rules.d/99-nist.rules << 'EOF'
-## Remove all existing rules
--D
-
-## Buffer size — increase for busy systems
--b 8192
-
-## Failure mode: 1=log to syslog, 2=kernel panic
--f 1
-
-## -----------------------------------------------
-## Identity and authentication changes
-## -----------------------------------------------
--w /etc/passwd   -p wa -k identity
--w /etc/shadow   -p wa -k identity
--w /etc/group    -p wa -k identity
--w /etc/gshadow  -p wa -k identity
--w /etc/sudoers  -p wa -k identity
--w /etc/sudoers.d/ -p wa -k identity
-
-## -----------------------------------------------
-## Login and session events
-## -----------------------------------------------
--w /var/log/lastlog     -p wa -k logins
--w /var/run/faillock    -p wa -k logins
--w /var/log/tallylog    -p wa -k logins
-
-## -----------------------------------------------
-## Privilege escalation
-## -----------------------------------------------
--a always,exit -F path=/usr/bin/sudo  -F perm=x -F auid>=1000 -F auid!=4294967295 -k privileged
--a always,exit -F path=/usr/bin/su    -F perm=x -F auid>=1000 -F auid!=4294967295 -k privileged
--a always,exit -F path=/usr/bin/newgrp -F perm=x -F auid>=1000 -k privileged
--a always,exit -F path=/usr/bin/chsh  -F perm=x -F auid>=1000 -k privileged
--a always,exit -F path=/usr/bin/passwd -F perm=x -F auid>=1000 -k privileged
-
-## -----------------------------------------------
-## File deletion
-## -----------------------------------------------
--a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat \
-   -F auid>=1000 -F auid!=4294967295 -k delete
--a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat \
-   -F auid>=1000 -F auid!=4294967295 -k delete
-
-## -----------------------------------------------
-## Network configuration changes
-## -----------------------------------------------
--a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale
--w /etc/hosts            -p wa -k system-locale
--w /etc/sysconfig/network -p wa -k system-locale
-
-## -----------------------------------------------
-## System time changes (NIST AU-8)
-## -----------------------------------------------
--a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time-change
--a always,exit -F arch=b32 -S adjtimex -S settimeofday -S stime -k time-change
--a always,exit -F arch=b64 -S clock_settime -k time-change
--w /etc/localtime -p wa -k time-change
-
-## -----------------------------------------------
-## Kernel module loading
-## -----------------------------------------------
--w /sbin/insmod  -p x -k modules
--w /sbin/rmmod   -p x -k modules
--w /sbin/modprobe -p x -k modules
--a always,exit -F arch=b64 -S init_module -S delete_module -k modules
-
-## -----------------------------------------------
-## SSH configuration changes
-## -----------------------------------------------
--w /etc/ssh/sshd_config -p wa -k sshd
-
-## -----------------------------------------------
-## Make rules immutable — requires reboot to change
-## -----------------------------------------------
--e 2
-EOF
-
-systemctl enable auditd
-
-# ---------------------------------------------------------------------------
-# 6. CHRONY / TIME SYNC (NIST AU-8)
-# ---------------------------------------------------------------------------
-echo "[6/13] Configuring chrony..."
+# 5. CHRONY / TIME SYNC (NIST AU-8)
+echo "[5/13] Configuring chrony..."
 cat > /etc/chrony.conf << 'EOF'
 # Primary time source — internal domain controllers
 server DC01.DOMAIN.COM iburst
@@ -423,29 +301,8 @@ EOF
 
 systemctl enable chronyd
 
-# ---------------------------------------------------------------------------
-# 7. AIDE — FILE INTEGRITY MONITORING (NIST SI-7)
-# ---------------------------------------------------------------------------
-echo "[7/13] Initializing AIDE..."
-# Initialize database — this takes a few minutes
-aide --init
-mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
-
-# Weekly integrity check via cron
-cat > /etc/cron.weekly/aide-check << 'EOF'
-#!/bin/bash
-REPORT=/var/log/aide/aide-report-$(date +%Y%m%d).txt
-mkdir -p /var/log/aide
-/usr/sbin/aide --check > "$REPORT" 2>&1
-# Log result to syslog
-logger -t aide "Weekly integrity check completed. Report: $REPORT"
-EOF
-chmod 700 /etc/cron.weekly/aide-check
-
-# ---------------------------------------------------------------------------
-# 8. FIREWALL (NIST SC-7)
-# ---------------------------------------------------------------------------
-echo "[8/13] Configuring firewall..."
+# 6. FIREWALL 
+echo "[6/11] Configuring firewall..."
 systemctl enable firewalld
 systemctl start firewalld
 
@@ -461,13 +318,12 @@ firewall-cmd --permanent --zone=drop --add-port=88/tcp    # Kerberos
 firewall-cmd --permanent --zone=drop --add-port=88/udp    # Kerberos
 firewall-cmd --permanent --zone=drop --add-port=464/tcp   # Kerberos change
 firewall-cmd --permanent --zone=drop --add-port=123/udp   # NTP
+firewall-cmd --permanent --zone=drop --add-port=8384/tcp # Maybe CrowdStrike?
 
 firewall-cmd --reload
 
-# ---------------------------------------------------------------------------
-# 9. LEGAL BANNER (NIST AC-8)
-# ---------------------------------------------------------------------------
-echo "[9/13] Setting legal banners..."
+# 7. BANNER 
+echo "[7/11] Setting banners..."
 BANNER_TEXT="NOTICE: This system is for authorized use only. All activity
 is monitored and recorded. Unauthorized access or use of this system
 is prohibited and may be subject to criminal and civil penalties.
@@ -477,10 +333,8 @@ echo "$BANNER_TEXT" > /etc/issue
 echo "$BANNER_TEXT" > /etc/issue.net
 echo "$BANNER_TEXT" > /etc/motd
 
-# ---------------------------------------------------------------------------
-# 10. SERVICE HARDENING (NIST CM-7)
-# ---------------------------------------------------------------------------
-echo "[10/13] Disabling unnecessary services..."
+# 8. SERVICES
+echo "[8/11] Disabling unnecessary services..."
 DISABLE_SVCS=(
     cups
     avahi-daemon
@@ -499,7 +353,6 @@ done
 
 # Disable unused kernel modules
 cat > /etc/modprobe.d/nist-disable.conf << 'EOF'
-# NIST CM-7 — disable unused/insecure kernel modules
 install cramfs   /bin/true
 install freevxfs /bin/true
 install jffs2    /bin/true
@@ -514,12 +367,9 @@ install rds      /bin/true
 install tipc     /bin/true
 EOF
 
-# ---------------------------------------------------------------------------
-# 11. SUDO HARDENING (NIST AC-6)
-# ---------------------------------------------------------------------------
-echo "[11/13] Hardening sudo..."
+# 9. SUDO HARDENING
+echo "[9/11] Hardening sudo..."
 cat > /etc/sudoers.d/99-nist << 'EOF'
-# Require tty for sudo (NIST AC-6)
 Defaults requiretty
 Defaults use_pty
 Defaults logfile=/var/log/sudo.log
@@ -530,10 +380,8 @@ Defaults timestamp_timeout=5
 EOF
 chmod 440 /etc/sudoers.d/99-nist
 
-# ---------------------------------------------------------------------------
-# 12. COCKPIT — WEB CONSOLE (RHEL specific)
-# ---------------------------------------------------------------------------
-echo "[12/13] Configuring Cockpit web console..."
+# 10. COCKPIT — WEB CONSOLE 
+echo "[10/11] Configuring Cockpit web console..."
 systemctl enable cockpit.socket
 
 # Restrict Cockpit to use TLS only and limit origins
@@ -556,13 +404,10 @@ EOF
 # Default port is 9090
 echo "Cockpit enabled on port 9090"
 
-# ---------------------------------------------------------------------------
-# 13. ENTRA ID (AZURE AD) SSSD CONFIGURATION
-# NOTE: This configures sssd for Entra ID.
+# 11. ENTRA ID SSSD CONFIGURATION
 # The actual domain join (realm join) must happen post-clone with a valid
 # service account credential. This section pre-stages the configuration.
-# ---------------------------------------------------------------------------
-echo "[13/13] Pre-staging Entra ID / sssd configuration..."
+echo "[11/11] Pre-staging Entra ID / sssd configuration..."
 
 # Install Microsoft packages for Entra ID integration
 # azure-sssd and required packages
@@ -648,14 +493,11 @@ EOF
 authselect select sssd with-mkhomedir with-faillock --force
 systemctl enable oddjobd
 
-# ---------------------------------------------------------------------------
 # POST-CLONE DOMAIN JOIN SCRIPT
-# Placed at /usr/local/sbin/entra-join.sh
+# /usr/local/sbin/entra-join.sh
 # Run this script on each clone after deployment.
-# ---------------------------------------------------------------------------
 cat > /usr/local/sbin/entra-join.sh << 'JOINSCRIPT'
 #!/bin/bash
-# =============================================================================
 # Post-Clone Entra ID Domain Join Script
 # Run as root on each deployed VM after cloning from template.
 # Usage: ./entra-join.sh
@@ -697,7 +539,7 @@ echo "$JOIN_PASS" | realm join \
     --user="$JOIN_USER" \
     --computer-ou="$JOIN_OU" \
     --os-name="RHEL" \
-    --os-version="9" \
+    --os-version="8" \
     "$DOMAIN"
 
 # Restart sssd
@@ -710,53 +552,11 @@ realm list
 
 echo ""
 echo "Domain join complete. Verify with: id <username>@${DOMAIN}"
-echo "Proceed with CrowdStrike and ManageEngine agent installation."
 JOINSCRIPT
 
 chmod 750 /usr/local/sbin/entra-join.sh
 
-# ---------------------------------------------------------------------------
-# GENERALIZATION — Remove unique identifiers before template conversion
-# ---------------------------------------------------------------------------
-echo "=== Generalizing system for template conversion ==="
-
-# Remove SSH host keys — regenerated on first boot of each clone
-rm -f /etc/ssh/ssh_host_*
-
-# Blank machine-id — systemd, DHCP, and journald use this
-echo -n > /etc/machine-id
-rm -f /var/lib/dbus/machine-id
-ln -s /etc/machine-id /var/lib/dbus/machine-id
-
-# Reset hostname
-hostnamectl set-hostname localhost.localdomain
-
-# Clear bash history
-history -c
-cat /dev/null > /root/.bash_history
-cat /dev/null > /home/localadmin/.bash_history 2>/dev/null || true
-
-# Clear temp files
-rm -rf /tmp/* /var/tmp/*
-
-# Clear NetworkManager connection profiles (will be re-created on boot)
-rm -f /etc/NetworkManager/system-connections/*
-
-# Clear cloud-init state if present
-if command -v cloud-init &>/dev/null; then
-    cloud-init clean --logs
-fi
-
 echo ""
 echo "=== Post-Install Complete: $(date) ==="
-echo "System is ready for template conversion in vCenter."
-echo ""
-echo "NEXT STEPS:"
-echo "  1. Shut down this VM"
-echo "  2. In vCenter: right-click VM > Template > Convert to Template"
-echo "  3. On each deployed clone, run: /usr/local/sbin/entra-join.sh"
-echo "  4. Install CrowdStrike Falcon Sensor"
-echo "  5. Install ManageEngine Endpoint Central agent"
-echo "  6. Run final OpenSCAP scan to confirm compliance"
 
 %end
